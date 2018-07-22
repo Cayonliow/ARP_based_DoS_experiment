@@ -10,6 +10,7 @@ from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.lib.packet import arp
+import numpy as np
 #from ryu.controller import dpset
 
 class Flag(object):
@@ -68,9 +69,13 @@ class monitor(app_manager.RyuApp):
             self.logger.info("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
             pkt_arp = pkt.get_protocol(arp.arp)
             arp_mac = pkt_arp.src_mac
-            self.logger.info(pkt_arp.src_mac)
+            self.logger.info(pkt_arp.dst_mac)
 
-            self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1    
+            if self.time_b_record_mac.has_key(arp_mac):
+                self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1
+            else:
+                self.time_b_record_mac[arp_mac] = 0
+                self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1  
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
@@ -115,18 +120,30 @@ class monitor(app_manager.RyuApp):
     def flow_removed_handler(self, ev):
         print('hello!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11!!')
         msg = ev.msg
-        dp = msg.datapath
+        datapath = msg.datapath
         ofp = dp.ofproto
+        parser = datapath.ofproto_parser
+
+        # parser = datapath.ofproto_parser
+        # match = parser.OFPMatch(eth_dst = dst_mac_to_block, arp_op=2)
+        # actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+        #                                   ofproto.OFPCML_NO_BUFFER)]
+        # self.add_flow(datapath, 0, match, actions)
         
         if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
         elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
             reason = 'HARD TIMEOUT'
             Flag.time_b=False
-            for i in range(self.time_b_record_mac):
+            for i in self.time_b_record_mac:
                 self.logger.info('~~~~~~~~~~~``table~~~~~~~~~~~~~~~~`')
-                self.logger.info(self.time_b_record_mac[i])
+                self.logger.info("%s    %d",i,self.time_b_record_mac[i])
 
+            dst_mac_to_block = max(self.time_b_record_mac)
+            
+            match = parser.OFPMatch(eth_dst = dst_mac_to_block, arp_op=2)
+            actions = None
+            self.add_flow(datapath, 8, match, actions)
 
         elif msg.reason == ofp.OFPRR_DELETE:
             reason = 'DELETE'
@@ -280,7 +297,12 @@ class monitor(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+        if actions == None:
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS)]
+        else:   
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions),
+                    parser.OFPInstructionMeter(meter_id,ofproto.OFPIT_METER)]
+
         if buffer_id:
             mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
                                     priority=priority, match=match,
