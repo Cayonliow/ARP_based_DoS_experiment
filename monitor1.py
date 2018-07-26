@@ -40,14 +40,18 @@ class monitor(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
+        self.logger.info("Flow entry added: all unknown packets are packetIn to controller")
+
 
         match1 = parser.OFPMatch(eth_type = 0x0806,arp_op = 1)
         actions1 = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
         self.add_flow(datapath, 3, match1, actions1)
+        self.logger.info("Flow entry added: all ARP request packets are passed through this and being counted")
 
         match2 = parser.OFPMatch(eth_type = 0x0806, arp_op = 2)
         actions2 = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
         self.add_flow(datapath, 3, match2, actions2)
+        self.logger.info("Flow entry added: all ARP response packets are passed through this and being counted")
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -68,20 +72,41 @@ class monitor(app_manager.RyuApp):
 
         # time-based
         if pkt.get_protocol(arp.arp) and self.record_req_res[datapath_id]['marked'] == 1:
+            self.logger.info("Condition entering: ARP packets are packetIn to the controller")
             pkt_arp = pkt.get_protocol(arp.arp)
-            arp_mac = pkt_arp.src_mac
-            self.logger.info(pkt_arp.dst_mac)
+            arp_src_mac = pkt_arp.src_mac
+            arp_dst_mac = pkt_arp.dst_mac
+            self.logger.info("Source MAC address = %s Destination MAC address = %s")
+            self.logger.info("Recodring Destination MAC address")
 
-            if self.time_b_record_mac.has_key(arp_mac):
-                self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1
+            if datapath_id not in self.time_b_record_mac:
+                    self.time_b_record_mac.setdefault(datapath_id)
+                    self.time_b_record_mac[datapath_id]={}
+
+            if self.time_b_record_mac[datapath_id].has_key(arp_dst_mac):
+                self.time_b_record_mac[datapath_id][arp_dst_mac] = self.time_b_record_mac[datapath_id][arp_dst_mac] + 1
             else:
-                self.time_b_record_mac[arp_mac] = 0
-                self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1 
+                self.time_b_record_mac[datapath_id],setdefault(arp_dst_mac)
+                self.time_b_record_mac[datapath_id][arp_dst_mac]=0
+                self.logger.info("Initialized: time_b_record_mac[%s][%s]",datapath_id, arp_dst_mac)
+                self.time_b_record_mac[arp_dst_mac] = self.time_b_record_mac[arp_dst_mac] + 1 
+            
+            self.logger.info("Showing: time_b_record_mac[%s][%s] = %d",datapath_id, arp_dst_mac, time_b_record_mac[arp_dst_mac])
+            
+            self.logger.info(" ")
+            self.logger.info(" ")
+            self.logger.info("datapath  | arp_dst_mac   | Amount")
+            self.logger.info("----------|---------------|----------")
 
+            for key in self.time_b_record_mac[datapath_id]:
+                self.logger.info("%11s|%15s|%3d",datapath_id,key,self.time_b_record_mac[datapath_id][key])
+        
         elif pkt.get_protocol(arp.arp) and msg.match['eth_src'] in dst_mac_block_arp_res:
+            self.logger.info("Condition entering: Destination start sending out ARP request")
             src_mac = msg.match['eth_src']
             match = parser.OFPMatch(eth_dst = src_mac, eth_type = 0x0806, arp_op = 2)
             self.remove_flows(datapath, match, 8)
+            self.logger.info("Flow entry removed: The host can start receiving ARP response")
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
@@ -133,19 +158,26 @@ class monitor(app_manager.RyuApp):
             reason = 'IDLE TIMEOUT'
         elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
             reason = 'HARD TIMEOUT'
+            self.logger.info("HARD TIMEOUT: Start settling up the count")
             del self.time_b_record_mac[datapath]
-            
+            self.logger.info("Record is cleared")
+
+
+            self.logger.info(" ")
+            self.logger.info(" ")
             for i in self.time_b_record_mac:
                 self.logger.info('~~~~~~~~~~~``table~~~~~~~~~~~~~~~~`')
                 self.logger.info("%s    %d",i,self.time_b_record_mac[i])
 
             _index = max(self.time_b_record_mac)
             if (_index>3):
+                self.logger.info("Confirmed: really being attacked")
                 dst_mac_to_block = self.time_b_record_mac.index(_index)
                 self.dst_mac_block_arp_res.append(dst_mac_to_block)
                 match = parser.OFPMatch(eth_dst = dst_mac_to_block, arp_op=2)
                 actions = None
                 self.add_flow(datapath, 8, match, actions)
+                self.logger.info("Flow entry added: All ARP response packets sending to this host are dropped")
 
         elif msg.reason == ofp.OFPRR_DELETE:
             reason = 'DELETE'
@@ -178,10 +210,13 @@ class monitor(app_manager.RyuApp):
                 del self.datapaths[datapath.id]
 
     def _monitor(self):
+        para = 1
         while True:
             for dp in self.datapaths.values():
                 self._request_stats(dp)
-            hub.sleep(1)
+
+            self.logger.info("Monitoring every %d second",para)
+            hub.sleep(para)
 
     def _request_stats(self, datapath):
         self.logger.debug('send stats request: %016x', datapath.id)
@@ -198,6 +233,8 @@ class monitor(app_manager.RyuApp):
         datapath = msg.datapath
         datapath_id = datapath.id
         
+        self.logger.info(" ")
+        self.logger.info(" ")
         self.logger.info('arp_op  packets  bytes  priority')
         self.logger.info('---------------- '
                          '-------- ----------------- '
@@ -209,7 +246,7 @@ class monitor(app_manager.RyuApp):
                              stat.packet_count, stat.byte_count, stat.priority, datapath_id)
 
             if stat.match['arp_op'] == 1:
-                self.logger.info('::::::::::::::::::::::::::')
+                self.logger.info('Have ARP request')
                 if datapath_id not in self.record_req_res:
                     self.record_req_res.setdefault(datapath_id)
                     self.record_req_res[datapath_id]={}
@@ -220,7 +257,7 @@ class monitor(app_manager.RyuApp):
                 self.record_req_res[datapath_id]['req'] = stat.packet_count
             
             if stat.match['arp_op'] == 2:
-                self.logger.info('::::::::::::::::::::::::::')
+                self.logger.info('Have ARP response')
                 if datapath_id not in self.record_req_res:
                     self.record_req_res.setdefault(datapath_id)
                     self.record_req_res[datapath_id]={}
@@ -237,12 +274,15 @@ class monitor(app_manager.RyuApp):
                     self.logger.info('arp_req = %d arp_res = %d diff, m = %d',self.record_req_res[datapath_id][req] - record_req_res[datapath_id][res], threshold_v)
 
                 if threshold_v > 3:
+                    self.logger.info("Condition entering: Suspicious condition and clear the recording table")
                     self.record_req_res[datapath_id]['req'] = 0
                     self.record_req_res[datapath_id]['res'] = 0
                     self.record_req_res[datapath_id]['marked'] = 1
 
                 self.time_based_packetin(6, datapath.id)
 
+        self.logger.info(" ")
+        self.logger.info(" ")
         self.logger.info('---------------- '
                          '-------- ----------------- '
                          '-------- -------- --------')        
@@ -267,11 +307,10 @@ class monitor(app_manager.RyuApp):
         self.logger.info('---------------- '
                          '-------- ----------------- '
                          '-------- -------- --------')
-        
+ # suspicous       
     def time_based_packetin(self, num, datapath_id):
-        
+        self.logger.info("Condition entering: time_based_packetin, all ARP response are packetIn")
         datapath = self.datapaths[datapath_id]
-        
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         #match = parser.OFPMatch()
