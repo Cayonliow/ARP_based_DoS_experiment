@@ -68,7 +68,6 @@ class monitor(app_manager.RyuApp):
 
         # time-based
         if pkt.get_protocol(arp.arp) and self.record_req_res[datapath_id]['marked'] == 1:
-            self.logger.info("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
             pkt_arp = pkt.get_protocol(arp.arp)
             arp_mac = pkt_arp.src_mac
             self.logger.info(pkt_arp.dst_mac)
@@ -77,7 +76,12 @@ class monitor(app_manager.RyuApp):
                 self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1
             else:
                 self.time_b_record_mac[arp_mac] = 0
-                self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1  
+                self.time_b_record_mac[arp_mac] = self.time_b_record_mac[arp_mac] + 1 
+
+        elif pkt.get_protocol(arp.arp) and msg.match['eth_src'] in dst_mac_block_arp_res:
+            src_mac = msg.match['eth_src']
+            match = parser.OFPMatch(eth_dst = src_mac, eth_type = 0x0806, arp_op = 2)
+            self.remove_flows(datapath, match, 8)
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
@@ -124,12 +128,6 @@ class monitor(app_manager.RyuApp):
         datapath = msg.datapath
         ofp = dp.ofproto
         parser = datapath.ofproto_parser
-
-        # parser = datapath.ofproto_parser
-        # match = parser.OFPMatch(eth_dst = dst_mac_to_block, arp_op=2)
-        # actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-        #                                   ofproto.OFPCML_NO_BUFFER)]
-        # self.add_flow(datapath, 0, match, actions)
         
         if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
@@ -144,7 +142,7 @@ class monitor(app_manager.RyuApp):
             _index = max(self.time_b_record_mac)
             if (_index>3):
                 dst_mac_to_block = self.time_b_record_mac.index(_index)
-                elf.dst_mac_block_arp_res.append(dst_mac_to_block)
+                self.dst_mac_block_arp_res.append(dst_mac_to_block)
                 match = parser.OFPMatch(eth_dst = dst_mac_to_block, arp_op=2)
                 actions = None
                 self.add_flow(datapath, 8, match, actions)
@@ -191,9 +189,6 @@ class monitor(app_manager.RyuApp):
         parser = datapath.ofproto_parser
 
         req = parser.OFPFlowStatsRequest(datapath)
-        datapath.send_msg(req)
-
-        req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
         datapath.send_msg(req)
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
@@ -273,23 +268,6 @@ class monitor(app_manager.RyuApp):
                          '-------- ----------------- '
                          '-------- -------- --------')
         
-    # def bfs_mac(self, mac_num):
-    #     mac_num = mac_num-1
-    #     t = 1 << mac_num 
-    #     num1 = 1 << mac_num
-    #     num2 = 0
-    #     for i in range(48-mac_num-1):
-    #         num1 = (num1 | t << i+1)
-    #         num2 = (num2 | t << i+1)
-            
-    #         print "num1" ,"{0:b}".format(num1)
-    #         print "num2" ,"{0:b}".format(num2)
-
-    #     match = parser.OFPMatch(arp_sha = 1, arp_op = 1)
-    #     actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-    #                                       ofproto.OFPCML_NO_BUFFER)]
-    #     self.add_flow(datapath, 4, match, actions)
-
     def time_based_packetin(self, num, datapath_id):
         
         datapath = self.datapaths[datapath_id]
@@ -301,23 +279,6 @@ class monitor(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]        
         self.add_flow(datapath,5,match, actions,None, num)
-    
-    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
-    def _port_stats_reply_handler(self, ev):
-        body = ev.msg.body
-#        self.logger.info('datapath         port     '
-#                         'rx-pkts  rx-bytes rx-error '
-#                        'tx-pkts  tx-bytes tx-error')
-#      self.logger.info('---------------- -------- '
-#                      '-------- -------- -------- '
-#                     '-------- -------- --------')
-#        for stat in sorted(body, key=attrgetter('port_no')):
-#            self.logger.info('%016x %8x %8d %8d %8d %8d %8d %8d',
-#                            ev.msg.datapath.id, stat.port_no,
-#                           stat.rx_packets, stat.rx_bytes, stat.rx_errors,
-#                          stat.tx_packets, stat.tx_bytes, stat.tx_errors)
-
-
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None, hard_timeout=0):
         ofproto = datapath.ofproto
@@ -336,5 +297,19 @@ class monitor(app_manager.RyuApp):
         else:
             mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                     match=match, instructions=inst,flags=ofproto.OFPFF_SEND_FLOW_REM, hard_timeout=hard_timeout)
+
+        datapath.send_msg(mod)
+
+    def remove_flows(self, datapath, match ,priority):
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = []
+        mod = parser.OFPFlowMod(datapath=datapath,
+                                                      command = ofproto.OFPFC_DELETE,                                                      priority=10,
+                                                      buffer_id = ofproto.OFPCML_NO_BUFFER,
+                                                      out_port = ofproto.OFPP_ANY,
+                                                      out_group = OFPG_ANY, flags=ofproto.OFPFF_SEND_FLOW_REM,
+                                                      match = match, instructions = inst)
 
         datapath.send_msg(mod)
