@@ -29,7 +29,7 @@ class monitor(app_manager.RyuApp):
         self.monitor_thread = hub.spawn(self._monitor)
         self.time_b_record_mac = {}
         self.dst_mac_block_arp_res={}
-        self.record_res_req = {}
+        self.record_req_res = {}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -58,6 +58,7 @@ class monitor(app_manager.RyuApp):
                               ev.msg.msg_len, ev.msg.total_len)
         msg = ev.msg
         datapath = msg.datapath
+        datapath_id = datapath.id
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         in_port = msg.match['in_port']
@@ -66,7 +67,7 @@ class monitor(app_manager.RyuApp):
         eth = pkt.get_protocols(ethernet.ethernet)[0]
 
         # time-based
-        if pkt.get_protocol(arp.arp) and record_req_res[datapath]['marked'] == 1:
+        if pkt.get_protocol(arp.arp) and self.record_req_res[datapath_id]['marked'] == 1:
             self.logger.info("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
             pkt_arp = pkt.get_protocol(arp.arp)
             arp_mac = pkt_arp.src_mac
@@ -200,6 +201,7 @@ class monitor(app_manager.RyuApp):
         body = ev.msg.body
         msg = ev.msg
         datapath = msg.datapath
+        datapath_id = datapath.id
         
         self.logger.info('arp_op  packets  bytes  priority')
         self.logger.info('---------------- '
@@ -207,27 +209,44 @@ class monitor(app_manager.RyuApp):
                          '-------- -------- --------')
         for stat in sorted([flow for flow in body if flow.priority == 3],
                            key=lambda flow: ()):
-            self.logger.info('%6x %8d %5d %8d',
+            self.logger.info('%6x %8d %5d %8d %8s',
                              stat.match['arp_op'],
-                             stat.packet_count, stat.byte_count, stat.priority)
+                             stat.packet_count, stat.byte_count, stat.priority, datapath_id)
 
             if stat.match['arp_op'] == 1:
-                record_req_res[datapath][req] = stat.packet_count
+                self.logger.info('::::::::::::::::::::::::::')
+                if datapath_id not in self.record_req_res:
+                    self.record_req_res.setdefault(datapath_id)
+                    self.record_req_res[datapath_id]={}
+
+                if 'req' not in self.record_req_res:
+                    self.record_req_res[datapath_id].setdefault('req')
+
+                self.record_req_res[datapath_id]['req'] = stat.packet_count
             
             if stat.match['arp_op'] == 2:
-                record_req_res[datapath][res] = stat.packet_count
+                self.logger.info('::::::::::::::::::::::::::')
+                if datapath_id not in self.record_req_res:
+                    self.record_req_res.setdefault(datapath_id)
+                    self.record_req_res[datapath_id]={}
 
-                threshold_v = record_req_res[datapath][res] - record_req_res[datapath][req]
-            if flow.priority == 3:
-                self.logger.info('arp_req = %d arp_res = %d diff, m = %d',record_req_res[datapath][req] - record_req_res[datapath][res], threshold_v)
-        # if abs(arp_res - arp_req) > 3:
-        #     self.bfs_mac(48)
-        if threshold_v > 3:
-            record_req_res[datapath][req] = 0
-            record_req_res[datapath][res] = 0
-            record_req_res[datapath]['marked'] = 1
+                if 'res' not in self.record_req_res:
+                    self.record_req_res[datapath_id].setdefault('res')
 
-            self.time_based_packetin(6, datapath.id)
+                self.record_req_res[datapath_id]['res'] = stat.packet_count
+
+            if 'res' in self.record_req_res and 'req' in self.record_req_res:
+                threshold_v = self.record_req_res[datapath_id]['res'] - self.record_req_res[datapath_id]['req']
+            
+                if flow.priority == 3:
+                    self.logger.info('arp_req = %d arp_res = %d diff, m = %d',self.record_req_res[datapath_id][req] - record_req_res[datapath_id][res], threshold_v)
+
+                if threshold_v > 3:
+                    self.record_req_res[datapath_id]['req'] = 0
+                    self.record_req_res[datapath_id]['res'] = 0
+                    self.record_req_res[datapath_id]['marked'] = 1
+
+                self.time_based_packetin(6, datapath.id)
 
         self.logger.info('---------------- '
                          '-------- ----------------- '
@@ -307,8 +326,7 @@ class monitor(app_manager.RyuApp):
         if actions == None:
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS)]
         else:   
-            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions),
-                    parser.OFPInstructionMeter(meter_id,ofproto.OFPIT_METER)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
 
         if buffer_id:
             mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
