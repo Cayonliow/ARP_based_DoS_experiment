@@ -77,16 +77,15 @@ class monitor(app_manager.RyuApp):
 
             int_src_mac = int(arp_src_mac.translate(None, ":.- "), 16)
 
-            str_bin_mac = str(bin(Flag.mac_to_add & int_src_mac))
+            str_bin_mac = str(bin(self.record_req_res[datapath_id]['mac_to_check'] & int_src_mac))
 
-            if str_bin_mac[Flag.place] == '1':
+            if str_bin_mac[self.record_req_res[datapath_id]['place']] == '1':
                 self.record_req_res[datapath_id]['mac_to_check'] = self.record_req_res[datapath_id]['mac_to_check'] + 1<<Flag.place
-                self.record_req_res[datapath_id]['place'] = Flag.place
 
             self.record_req_res[datapath_id]['place'] = self.record_req_res[datapath_id]['place'] -1 
 
             if self.record_req_res[datapath_id]['place'] == -1:
-                k=str(hex(Flag.mac_to_add))
+                k=str(hex(self.record_req_res[datapath_id]['mac_to_check']))
                 k_mac = k[2:4]+":"+k[4:6]+":"+k[6:8]+":"+k[8:10]+":"+k[10:12]+":"+k[12:14]
                 match = parser.OFPMatch(eth_src=k_mac)
                 self.logger.info('BFS done, spoofing mac address = %x', k_mac)
