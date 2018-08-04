@@ -27,8 +27,8 @@ class monitor1(app_manager.RyuApp):
         self.port_to_meter = {}
         self.datapaths = {}
         self.monitor_thread = hub.spawn(self._monitor)
-        self.time_b_record_mac = {}
-        self.dst_mac_block_arp_res={}
+        self.time_b_record_mac = []
+        self.dst_mac_block_arp_res=[]
         self.record_req_res = []
         self.list = []
         self.been_initialized = False
@@ -71,6 +71,7 @@ class monitor1(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
+        _arp = pkt.get_protocol(arp.arp)
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
@@ -82,8 +83,36 @@ class monitor1(app_manager.RyuApp):
             if(elem['datapath'] == datapath_id):
                 if elem['marked'] == 'yes':
                     _marked=True
+        if _arp:
+            self.logger.info('\n\n\nmsg.match[eth_src] = %s\n\n\n',_arp.src_mac)
 
-        if pkt.get_protocol(arp.arp) and _marked == True:
+        if _arp and _arp.src_mac in self.dst_mac_block_arp_res:
+            self.logger.info("Condition entering: Destination start sending out ARP request")
+            src_mac = _arp.src_mac
+            match = parser.OFPMatch(eth_dst = src_mac, eth_type = 0x0806, arp_op = 2)
+            self.remove_flows(datapath, match, 8)
+            for elem in self.record_req_res:
+                    if(elem['datapath'] == datapath_id and elem['marked']=='no'):
+                        elem['req']=0
+                        elem['res']=0
+                        elem['marked']='no'
+            self.logger.info("Flow entry removed: The host can start receiving ARP response")         
+
+            match = parser.OFPMatch(eth_type = 0x0806, eth_src = src_mac, arp_op=1)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                        ofproto.OFPCML_NO_BUFFER)]
+            self.remove_flows(datapath, match, 9)
+            self.logger.info("Flow entry removed: ARP request wouldnt be paccketIn to the controller")
+
+            for elem in self.record_req_res:
+                    if(elem['datapath'] == datapath_id and elem['marked']=='yes'):
+                        elem['req']=0
+                        elem['res']=0
+                        elem['marked']='no'
+
+
+
+        elif _arp and _marked == True:
             self.logger.info("Condition entering: ARP packets are packetIn to the controller")
             pkt_arp = pkt.get_protocol(arp.arp)
             arp_src_mac = pkt_arp.src_mac
@@ -91,37 +120,30 @@ class monitor1(app_manager.RyuApp):
             self.logger.info("Source MAC address = %s Destination MAC address = %s",arp_src_mac, arp_dst_mac )
             self.logger.info("Recodring Destination MAC address")
 
-            if datapath_id not in self.time_b_record_mac:
-                    self.time_b_record_mac.setdefault(datapath_id)
-                    self.time_b_record_mac[datapath_id]={}
+            been_ini = False
+            for elem in self.time_b_record_mac:
+                if(elem['datapath'] == datapath_id and elem['arp_dst_mac'] == arp_dst_mac):
+                    been_ini = True
+                    break
 
-            if self.time_b_record_mac[datapath_id].has_key(arp_dst_mac):
-                self.time_b_record_mac[datapath_id][arp_dst_mac] = self.time_b_record_mac[datapath_id][arp_dst_mac] + 1
-                self.list.append(arp_dst_mac)
-            else:
-                self.time_b_record_mac[datapath_id].setdefault(arp_dst_mac)
-                self.time_b_record_mac[datapath_id][arp_dst_mac]=0
+            if been_ini == False:
+                self.time_b_record_mac.append({'datapath': datapath_id, 'arp_dst_mac': arp_dst_mac, 'counting':0 })
                 self.logger.info("Initialized: time_b_record_mac[%s][%s]",datapath_id, arp_dst_mac)
-                self.time_b_record_mac[datapath_id][arp_dst_mac] = 0
-                self.time_b_record_mac[datapath_id][arp_dst_mac] = self.time_b_record_mac[datapath_id][arp_dst_mac] + 1 
-                self.list.append(arp_dst_mac)
 
-            self.logger.info("Showing: time_b_record_mac[%s][%s] = %d",datapath_id, arp_dst_mac, self.time_b_record_mac[datapath_id][arp_dst_mac])
-            
+            for elem in self.time_b_record_mac:
+                if(elem['datapath'] == datapath_id and elem['arp_dst_mac'] == arp_dst_mac):
+                    elem['counting'] = elem['counting'] + 1
+                    self.logger.info("Showing: time_b_record_mac[%s][%s] = %d",datapath_id, arp_dst_mac, elem['counting'])
+                    break
+
+             
             self.logger.info(" ")
             self.logger.info(" ")
             self.logger.info("datapath  | arp_dst_mac     | Amount")
             self.logger.info("----------|-----------------|----------")
 
-            for key in self.time_b_record_mac[datapath_id]:
-                self.logger.info("%9s|%17s|%3d",datapath_id,key,self.time_b_record_mac[datapath_id][key])
-        
-        elif pkt.get_protocol(arp.arp) and msg.match['eth_src'] in dst_mac_block_arp_res:
-            self.logger.info("Condition entering: Destination start sending out ARP request")
-            src_mac = msg.match['eth_src']
-            match = parser.OFPMatch(eth_dst = src_mac, eth_type = 0x0806, arp_op = 2)
-            self.remove_flows(datapath, match, 8)
-            self.logger.info("Flow entry removed: The host can start receiving ARP response")
+            for elem in self.time_b_record_mac:
+                self.logger.info("%9s|%17s|%3d",elem['datapath'], elem['arp_dst_mac'], elem['counting'])
 
         dst = eth.dst
         src = eth.src
@@ -163,36 +185,32 @@ class monitor1(app_manager.RyuApp):
     def flow_removed_handler(self, ev):
         msg = ev.msg
         datapath = msg.datapath
-        ofp = datapath.ofproto
+        ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         datapath_id = datapath.id
         
-        if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
+        if msg.reason == ofproto.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
-        elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
+        elif msg.reason == ofproto.OFPRR_HARD_TIMEOUT:
             reason = 'HARD TIMEOUT'
             self.logger.info("HARD TIMEOUT: Start settling up the count")
-            del self.time_b_record_mac[datapath.id]
             self.logger.info("Record is cleared")
 
             _index = 0
-            for key in self.list:
-                if (self.time_b_record_mac[datapath_id][key]  > _index):
-                    self.logger.info('rrrrrrrrrrrrrrrrrrrrrrrr=%d',self.time_b_record_mac[datapath_id][key])
-                    _index = self.time_b_record_mac[datapath_id][key]
+            dst_mac_to_block = 'none'
+
+            for elem in self.time_b_record_mac:
+                if elem['datapath'] == datapath_id:
+                    if elem['counting'] > _index:
+                        _index = elem['counting']
 
             if (_index>1):
                 self.logger.info("Confirmed: really being attacked")
-                
-                for key in self.time_b_record_mac:
-                    if (self.time_b_record_mac[datapath_id][key] == _index):
-                        dst_mac_to_block = key
+
+                for elem in self.time_b_record_mac:
+                    if elem['datapath'] == datapath_id and elem['counting'] == _index:
+                        dst_mac_to_block = elem['arp_dst_mac']
                         break
-                self.dst_mac_block_arp_res.append(dst_mac_to_block)
-                match = parser.OFPMatch(eth_dst = dst_mac_to_block, arp_op=2)
-                actions = None
-                self.add_flow(datapath, 8, match, actions)
-                self.logger.info("Flow entry added: All ARP response packets sending to this host are dropped")
 
                 match1 = parser.OFPMatch(eth_type = 0x0806,arp_op = 1)
                 actions1 = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
@@ -204,13 +222,31 @@ class monitor1(app_manager.RyuApp):
                 actions2 = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
                 self.remove_flows(datapath, match2, 3)
                 self.add_flow(datapath, 3, match2, actions2)
+                for elem in self.time_b_record_mac:
+                    if elem['datapath'] == datapath_id and elem['arp_dst_mac'] == dst_mac_to_block:
+                        elem['counting'] = 0
+                        break
                 self.logger.info("Flow entry reset: all ARP response packets are passed through this and being counted")
 
+                self.dst_mac_block_arp_res.append(dst_mac_to_block)
+                for mac in self.dst_mac_block_arp_res:
+                    self.logger.info("dst_mac_block_arp_res %s", mac)
+
+                match = parser.OFPMatch(eth_type = 0x0806, eth_dst = dst_mac_to_block, arp_op=2)
+                actions = None
+                self.add_flow(datapath, 8, match, actions)
+                self.logger.info("Flow entry added: All ARP response packets sending to this host are dropped")
+
+                match = parser.OFPMatch(eth_type = 0x0806, eth_src = dst_mac_to_block, arp_op=1)
+                actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+                self.add_flow(datapath, 9, match, actions)
+                self.logger.info("Flow entry added: ARP request from the host would packetIn to the controller")
 
 
-        elif msg.reason == ofp.OFPRR_DELETE:
+        elif msg.reason == ofproto.OFPRR_DELETE:
             reason = 'DELETE'
-        elif msg.reason == ofp.OFPRR_GROUP_DELETE:
+        elif msg.reason == ofproto.OFPRR_GROUP_DELETE:
             reason = 'GROUP DELETE'
         else:
             reason = 'unknown'
@@ -365,7 +401,7 @@ class monitor1(app_manager.RyuApp):
         parser = datapath.ofproto_parser
         
         if actions == None:
-            inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS,[])]
         else:   
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
 
@@ -389,7 +425,7 @@ class monitor1(app_manager.RyuApp):
                                                       command = ofproto.OFPFC_DELETE,                                                      priority=10,
                                                       buffer_id = ofproto.OFPCML_NO_BUFFER,
                                                       out_port = ofproto.OFPP_ANY,
-                                                      out_group = OFPG_ANY, flags=ofproto.OFPFF_SEND_FLOW_REM,
+                                                      out_group = ofproto.OFPG_ANY, flags=ofproto.OFPFF_SEND_FLOW_REM,
                                                       match = match, instructions = inst)
 
         datapath.send_msg(mod)
