@@ -13,7 +13,7 @@ from ryu.lib.packet import arp
 
 class Flag(object):
     mac_to_add=0
-    place = 47
+    #place = 47
 
 class monitor(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -24,9 +24,9 @@ class monitor(app_manager.RyuApp):
         self.port_to_meter = {}
         self.datapaths = {}
         self.monitor_thread = hub.spawn(self._monitor)
-        # self.time_b_record_mac = {}
-        # self.dst_mac_block_arp_res={}
+        #self.record_req_res = {}
         self.record_req_res = {}
+        self.been_initialized = False
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -71,27 +71,50 @@ class monitor(app_manager.RyuApp):
             # ignore lldp packet
             return
 
-        if pkt.get_protocol(arp.arp) and self.record_req_res[datapath_id]['marked'] == 1:
+        if pkt.get_protocol(arp.arp) and self.record_req_res['marked'] == 'yes':
+            self.logger.info("Condition entering: ARP packets are packetIn to the controller")
             pkt_arp = pkt.get_protocol(arp.arp)
             arp_src_mac = pkt_arp.src_mac
+            arp_dst_mac = pkt_arp.dst_mac
+            self.logger.info("Source MAC address = %s Destination MAC address = %s",arp_src_mac, arp_dst_mac )
+            self.logger.info("Recodring Destination MAC address")
 
             int_src_mac = int(arp_src_mac.translate(None, ":.- "), 16)
+            self.logger.info('Source mac in strings = %s',arp_src_mac)
+            self.logger.info('Source mac in integer = %s',int_src_mac)
+            print "Source mac in integer = ","{0:b}".format(int_src_mac)
 
-            str_bin_mac = str(bin(self.record_req_res[datapath_id]['mac_to_check'] & int_src_mac))
+            str_bin_mac = str("{0:b}".format(self.record_req_res['mac_to_check'] & int_src_mac))
+            print "binary to compare     = " ,"{0:b}".format(self.record_req_res['mac_to_check'])
+            
+            self.logger.info('after compare          = %s',str_bin_mac)
+            while len(str_bin_mac)<48:
+                str_bin_mac = '0'+str_bin_mac
+            self.logger.info('after compare          = %s',str_bin_mac)
 
-            if str_bin_mac[self.record_req_res[datapath_id]['place']] == '1':
-                self.record_req_res[datapath_id]['mac_to_check'] = self.record_req_res[datapath_id]['mac_to_check'] + 1<<Flag.place
+            self.logger.info('self.record_req_res[bfs_place] = %d\n',self.record_req_res['bfs_place'])
+            
+            if str_bin_mac[self.record_req_res['bfs_place']] == '0':
+                self.record_req_res['mac_to_check'] = self.record_req_res['mac_to_check'] - (1 << (47 - self.record_req_res['bfs_place']))
+                
+            if self.record_req_res['bfs_place']< 47:
+                self.record_req_res['mac_to_check'] = self.record_req_res['mac_to_check'] + (1 << (46 - self.record_req_res['bfs_place']))
 
-            self.record_req_res[datapath_id]['place'] = self.record_req_res[datapath_id]['place'] -1 
+            print "after checking 1      = " ,"{0:b}".format(self.record_req_res['mac_to_check'])
 
-            if self.record_req_res[datapath_id]['place'] == -1:
-                k=str(hex(self.record_req_res[datapath_id]['mac_to_check']))
+            self.record_req_res['bfs_place'] = self.record_req_res['bfs_place'] + 1 
+
+            if self.record_req_res['bfs_place'] == 48:
+                k=str(hex(self.record_req_res['mac_to_check']))
                 k_mac = k[2:4]+":"+k[4:6]+":"+k[6:8]+":"+k[8:10]+":"+k[10:12]+":"+k[12:14]
                 match = parser.OFPMatch(eth_src=k_mac)
-                self.logger.info('BFS done, spoofing mac address = %x', k_mac)
+                self.logger.info('BFS done, spoofing mac address = %s', k_mac)
                 self.logger.info('the bad guy is being blocked')
-                mac_to_add=0
-                place = 47
+                self.record_req_res['marked'] = 'yes'
+                self.record_req_res['bfs_place'] = 47
+                self.record_req_res['mac_to_check'] = 1 << 47
+                while(1): {}
+
 
         dst = eth.dst
         src = eth.src
@@ -133,16 +156,16 @@ class monitor(app_manager.RyuApp):
     def flow_removed_handler(self, ev):
         msg = ev.msg
         datapath = msg.datapath
-        ofp = dp.ofproto
+        ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         
-        if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
+        if msg.reason == ofproto.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
-        elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
+        elif msg.reason == ofproto.OFPRR_HARD_TIMEOUT:
             reason = 'HARD TIMEOUT'
-        elif msg.reason == ofp.OFPRR_DELETE:
+        elif msg.reason == ofproto.OFPRR_DELETE:
             reason = 'DELETE'
-        elif msg.reason == ofp.OFPRR_GROUP_DELETE:
+        elif msg.reason == ofproto.OFPRR_GROUP_DELETE:
             reason = 'GROUP DELETE'
         else:
             reason = 'unknown'
@@ -206,43 +229,39 @@ class monitor(app_manager.RyuApp):
                              stat.match['arp_op'],
                              stat.packet_count, stat.byte_count, stat.priority, datapath_id)
 
+            if(self.record_req_res.has_key('datapath')):
+                self.been_initialized = True
+            else:
+                self.been_initialized = False
+    
+            if self.been_initialized == False:
+                    self.record_req_res = {'datapath': datapath_id, 'req': 0, 'res': 0, 'marked': 'no', 'bfs_place': 0, 'mac_to_block': 1 << 47}
+
+
             if stat.match['arp_op'] == 1:
-                self.logger.info('Have ARP request')
-                if datapath_id not in self.record_req_res:
-                    self.record_req_res.setdefault(datapath_id)
-                    self.record_req_res[datapath_id]={}
-
-                if 'req' not in self.record_req_res:
-                    self.record_req_res[datapath_id].setdefault('req')
-
-                self.record_req_res[datapath_id]['req'] = stat.packet_count
+                if(self.record_req_res['datapath'] == datapath_id):
+                    self.record_req_res['req'] = stat.packet_count
             
             if stat.match['arp_op'] == 2:
                 self.logger.info('Have ARP response')
-                if datapath_id not in self.record_req_res:
-                    self.record_req_res.setdefault(datapath_id)
-                    self.record_req_res[datapath_id]={}
+                if(self.record_req_res['datapath'] == datapath_id):
+                    self.record_req_res['res'] = stat.packet_count
 
-                if 'res' not in self.record_req_res:
-                    self.record_req_res[datapath_id].setdefault('res')
+            self.logger.info('Checking threshold value\n\n\n')
+            threshold_v = self.record_req_res['res'] - self.record_req_res['req']
+        
+            if flow.priority == 3:
+                self.logger.info('arp_req = %d arp_res = %d diff, m = %d',self.record_req_res['req'] - record_req_res['res'], threshold_v)
 
-                self.record_req_res[datapath_id]['res'] = stat.packet_count
+            if threshold_v > 3 and self.record_req_res['marked'] == 'no' :
+                self.logger.info("Condition entering: Suspicious condition and clear the recording table")
+                self.record_req_res['req'] = 0
+                self.record_req_res['res'] = 0
+                self.record_req_res['marked'] = 'yes'
+                self.record_req_res['bfs_place'] = 0
+                self.record_req_res['mac_to_check'] = 1 << 48
 
-            if 'res' in self.record_req_res and 'req' in self.record_req_res:
-                threshold_v = self.record_req_res[datapath_id]['res'] - self.record_req_res[datapath_id]['req']
-            
-                if flow.priority == 3:
-                    self.logger.info('arp_req = %d arp_res = %d diff, m = %d',self.record_req_res[datapath_id][req] - record_req_res[datapath_id][res], threshold_v)
-
-                if threshold_v > 3:
-                    self.logger.info("Condition entering: Suspicious condition and clear the recording table")
-                    self.record_req_res[datapath_id]['req'] = 0
-                    self.record_req_res[datapath_id]['res'] = 0
-                    self.record_req_res[datapath_id]['marked'] = 1
-                    self.record_req_res[datapath_id]['bfs_place'] = 47
-                    self.record_req_res[datapath_id]['mac_to_check'] = 0 
-
-                    self.bfs_add_flow(6, datapath.id)
+                self.bfs_add_flow(6, datapath.id)
 
 
         self.logger.info(" ")
@@ -277,7 +296,6 @@ class monitor(app_manager.RyuApp):
         datapath = self.datapaths[datapath_id]
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        #match = parser.OFPMatch()
         match = parser.OFPMatch(eth_type = 0x0806, arp_op = 1)
         actions = None
         self.add_flow(datapath,6,match, actions)
@@ -286,14 +304,14 @@ class monitor(app_manager.RyuApp):
         match = parser.OFPMatch(eth_type = 0x0806, arp_op = 2)
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]        
-        self.add_flow(datapath,5,match, actions,None, num)
+        self.add_flow(datapath,5,match, actions)
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None, hard_timeout=0):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         
         if actions == None:
-            inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS,[])]
         else:   
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
 

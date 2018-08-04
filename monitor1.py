@@ -83,6 +83,7 @@ class monitor1(app_manager.RyuApp):
             if(elem['datapath'] == datapath_id):
                 if elem['marked'] == 'yes':
                     _marked=True
+                    break
         if _arp:
             self.logger.info('\n\n\nmsg.match[eth_src] = %s\n\n\n',_arp.src_mac)
 
