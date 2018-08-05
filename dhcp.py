@@ -26,6 +26,7 @@ class DHCPResponder(app_manager.RyuApp):
         self.bin_netmask = addrconv.ipv4.text_to_bin(self.netmask)
         self.bin_server = addrconv.ipv4.text_to_bin(self.dhcp_server)
         self.ip_addr = '192.0.2.9'
+        self.table = {}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _switch_features_handler(self, ev):
@@ -45,17 +46,68 @@ class DHCPResponder(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+        self.logger.info('sdfffffffffffffffffffffffffffffff')
         msg = ev.msg
         datapath = msg.datapath
         port = msg.match['in_port']
-        pkt = packet.Packet(data=msg.data)
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
+
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            # ignore lldp packet
+            return
 
         pkt_dhcp = pkt.get_protocols(dhcp.dhcp)
-        if not pkt_dhcp:
-            return
-        else:
+        if pkt_dhcp:
             self._handle_dhcp(datapath, port, pkt)
-        return
+            return
+
+        pkt_arp = pkt.get_protocol(arp.arp)
+        if pkt_arp and pkt_arp.opcode == 2:
+            arp_src_mac = pkt_arp.src_mac
+            if self.table[arp_src_mac][4] != 'DHCPACK'
+                return
+            else
+                if self.table[arp_src_mac][2] != src_ip
+                return
+
+        dst = eth.dst
+        src = eth.src
+
+        dpid = datapath.id
+        self.mac_to_port.setdefault(dpid, {})
+
+        self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+
+        # learn a mac address to avoid FLOOD next time.
+        self.mac_to_port[dpid][src] = in_port
+
+        if dst in self.mac_to_port[dpid]:
+            out_port = self.mac_to_port[dpid][dst]
+        else:
+            out_port = ofproto.OFPP_FLOOD
+
+        actions = [parser.OFPActionOutput(out_port)]
+
+        # install a flow to avoid packet_in next time
+        if out_port != ofproto.OFPP_FLOOD:
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+            # verify if we have a valid buffer_id, if yes avoid to send both
+            # flow_mod & packet_out
+            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
+                return
+            else:
+                self.add_flow(datapath, 1, match, actions)
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=data)
+        datapath.send_msg(out)
+
+
 
     def assemble_ack(self, pkt):
         req_eth = pkt.get_protocol(ethernet.ethernet)
@@ -142,9 +194,15 @@ class DHCPResponder(app_manager.RyuApp):
         self.logger.info("NEW DHCP %s PACKET RECEIVED: %s" %
                          (dhcp_state, pkt_dhcp))
         if dhcp_state == 'DHCPDISCOVER':
+            src_mac = pkt_dhcp.src_mac
+            self.logger.info('SADDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD')
+            self.table[src_mac] = [pkt_dhcp.yiaddr, pkt_dhcp.chaddr, port, dhcp_state]
             self._send_packet(datapath, port, self.assemble_offer(pkt))
+            self.table[src_mac] = [pkt_dhcp.yiaddr, pkt_dhcp.chaddr, port, 'DHCPOFFER']
         elif dhcp_state == 'DHCPREQUEST':
+            self.table[src_mac] = [pkt_dhcp.yiaddr, pkt_dhcp.chaddr, port, dhcp_state]
             self._send_packet(datapath, port, self.assemble_ack(pkt))
+            self.table[src_mac] = [pkt_dhcp.yiaddr, pkt_dhcp.chaddr, port, 'DHCPACK']
         else:
             return
 

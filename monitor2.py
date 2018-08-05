@@ -101,20 +101,49 @@ class monitor(app_manager.RyuApp):
                 self.record_req_res['mac_to_check'] = self.record_req_res['mac_to_check'] + (1 << (46 - self.record_req_res['bfs_place']))
 
             print "after checking 1      = " ,"{0:b}".format(self.record_req_res['mac_to_check'])
+            checking1_str = str("{0:b}".format(self.record_req_res['mac_to_check']))
+            while len(checking1_str)<48:
+                checking1_str = '0' + checking1_str
+            self.logger.info("after checking 1string= %s",checking1_str)
 
             self.record_req_res['bfs_place'] = self.record_req_res['bfs_place'] + 1 
 
             if self.record_req_res['bfs_place'] == 48:
                 k=str(hex(self.record_req_res['mac_to_check']))
-                k_mac = k[2:4]+":"+k[4:6]+":"+k[6:8]+":"+k[8:10]+":"+k[10:12]+":"+k[12:14]
+                k = k[2:]
+
+                while len(k)<12:
+                    k = '0' + k
+
+                k_mac = k[0:2]+":"+k[2:4]+":"+k[4:6]+":"+k[6:8]+":"+k[8:10]+":"+k[10:12]
+
                 match = parser.OFPMatch(eth_src=k_mac)
+                actions = None
+                self.add_flow(datapath,7,match, actions)
+
                 self.logger.info('BFS done, spoofing mac address = %s', k_mac)
                 self.logger.info('the bad guy is being blocked')
-                self.record_req_res['marked'] = 'yes'
-                self.record_req_res['bfs_place'] = 47
-                self.record_req_res['mac_to_check'] = 1 << 47
-                while(1): {}
+                self.logger.info("Flow entry added: all packets from the spoofer are blocked")
 
+                self.record_req_res['marked'] = 'yes'
+                self.record_req_res['bfs_place'] = 0
+                self.record_req_res['mac_to_check'] = 1 << 47
+
+                match = parser.OFPMatch(eth_type = 0x0806, arp_op = 1)    
+                self.remove_flows(datapath,match,6)
+                self.logger.info("Flow entry removed: Stop blocking all ARP request ")
+
+                match1 = parser.OFPMatch(eth_type = 0x0806,arp_op = 1)
+                actions1 = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+                self.remove_flows(datapath, match1, 3)
+                self.add_flow(datapath, 3, match1, actions1)
+                self.logger.info("Flow entry reset: all ARP request packets are passed through this and being counted")
+
+                match2 = parser.OFPMatch(eth_type = 0x0806, arp_op = 2)
+                actions2 = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
+                self.remove_flows(datapath, match2, 3)
+                self.add_flow(datapath, 3, match2, actions2)
+                self.logger.info("Flow entry reset: all ARP response packets are passed through this and being counted")
 
         dst = eth.dst
         src = eth.src
@@ -259,7 +288,7 @@ class monitor(app_manager.RyuApp):
                 self.record_req_res['res'] = 0
                 self.record_req_res['marked'] = 'yes'
                 self.record_req_res['bfs_place'] = 0
-                self.record_req_res['mac_to_check'] = 1 << 48
+                self.record_req_res['mac_to_check'] = 1 << 47
 
                 self.bfs_add_flow(6, datapath.id)
 
@@ -335,7 +364,7 @@ class monitor(app_manager.RyuApp):
                                                       command = ofproto.OFPFC_DELETE,                                                      priority=10,
                                                       buffer_id = ofproto.OFPCML_NO_BUFFER,
                                                       out_port = ofproto.OFPP_ANY,
-                                                      out_group = OFPG_ANY, flags=ofproto.OFPFF_SEND_FLOW_REM,
+                                                      out_group = ofproto.OFPG_ANY, flags=ofproto.OFPFF_SEND_FLOW_REM,
                                                       match = match, instructions = inst)
 
         datapath.send_msg(mod)
